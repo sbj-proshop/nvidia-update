@@ -21,7 +21,8 @@ param (
 	[switch] $KeepDownload = $false, # Don't delete the downloaded driver package after installation (or if an error occurred)
 	[string] $GpuDataFileUrl = "https://raw.githubusercontent.com/ZenitH-AT/nvidia-data/main/gpu-data.json", # Override the GPU data JSON file URL/path for determining product family (GPU) ID
 	[string] $OsDataFileUrl = "https://raw.githubusercontent.com/ZenitH-AT/nvidia-data/main/os-data.json", # Override the OS data JSON file URL/path for determining operating system ID
-	[string] $AjaxDriverServiceUrl = "https://gfwsl.geforce.com/services_toolkit/services/com/nvidia/services/AjaxDriverService.php" # AjaxDriverService URL; e.g., replace ".com" with ".cn" to solve connectivity issues
+	[string] $AjaxDriverServiceUrl = "https://gfwsl.geforce.com/services_toolkit/services/com/nvidia/services/AjaxDriverService.php", # AjaxDriverService URL; e.g., replace ".com" with ".cn" to solve connectivity issues
+	[string] $ArchiverPath = $null # Override the path to the archiver executable (7-Zip or WinRAR); if not specified, will detect from registry
 )
 
 ## Constant variables and functions
@@ -602,57 +603,70 @@ catch {
 }
 
 ## Get archiver (7-Zip or WinRAR) executable path and argument list
-$archiverPath = Get-RegistryValueData "HKLM:\SOFTWARE\7-Zip" "Path" "7z.exe"
-$extractionArgumentList = "x -bso0 -bsp1 -bse1 `"{0}`" -o`"{1}`" {2}"
+function Get-ArchiverInfo {
+    # Use provided archiver path if specified
+    if ($ArchiverPath) {
+        if (-not (Test-Path $ArchiverPath)) {
+            Write-ExitError "`nSpecified archiver path does not exist: $ArchiverPath"
+        }
 
-if (-not $archiverPath) {
-	# 7-Zip not installed; use WinRAR if installed
-	$winRarPath = Get-RegistryValueData "HKLM:\SOFTWARE\WinRAR" "exe64"
+        $argList = if ($ArchiverPath -like "*7z*") {
+            "x -bso0 -bsp1 -bse1 `"{0}`" -o`"{1}`" {2}"
+        } elseif ($ArchiverPath -like "*winrar*") {
+            "x `"{0}`" `"{1}`" -IBCK {2}"
+        } else {
+            Write-ExitError "`nUnsupported archiver specified. Please provide path to 7-Zip or WinRAR executable."
+        }
 
-	if ($osBits -eq 32) {
-		$winRarPath = Get-RegistryValueData "HKLM:\SOFTWARE\WOW6432Node\WinRAR" "exe32"
-	}
+        return $ArchiverPath, $argList
+    }
 
-	if ($winRarPath) {
-		$archiverPath = $winRarPath
-		$extractionArgumentList = "x `"{0}`" `"{1}`" -IBCK {2}"
-	}
-	else {
-		# WinRAR not installed; offer 7-Zip installation
-		Write-Feedback "`nA supported archiver is required to extract driver files."
+    # Try to detect 7-Zip from registry
+    $path = Get-RegistryValueData "HKLM:\SOFTWARE\7-Zip" "Path" "7z.exe"
+    if ($path) {
+        return $path, "x -bso0 -bsp1 -bse1 `"{0}`" -o`"{1}`" {2}"
+    }
 
-		if ((Get-PromptChoice "Do you want to download and install 7-Zip?" @("&Yes", "&No")) -eq 1) {
-			Write-ExitError "`nDriver files cannot be extracted without a supported archiver."
-		}
+    # Try to detect WinRAR from registry
+    $path = Get-RegistryValueData "HKLM:\SOFTWARE\WinRAR" "exe64"
+    if ($osBits -eq 32) {
+        $path = Get-RegistryValueData "HKLM:\SOFTWARE\WOW6432Node\WinRAR" "exe32"
+    }
+    if ($path) {
+        return $path, "x `"{0}`" `"{1}`" -IBCK {2}"
+    }
 
-		# Download 7-Zip to temporary folder and silently install
-		$archiverDownloadUrl = "$(if ($osBits -eq 64) { "https://www.7-zip.org/a/7z2201-x64.exe" } else { "https://www.7-zip.org/a/7z2201.exe" })"
-		$archiverDownloadPath = "$($env:TEMP)\7z-install.exe"
+    # No archiver found - offer 7-Zip installation
+    Write-Feedback "`nA supported archiver is required to extract driver files."
+    if ((Get-PromptChoice "Do you want to download and install 7-Zip?" @("&Yes", "&No")) -eq 1) {
+        Write-ExitError "`nDriver files cannot be extracted without a supported archiver."
+    }
 
-		Write-Time
-		Write-Feedback "Downloading 7-Zip..."
-		Get-WebFile $archiverDownloadUrl $archiverDownloadPath
+    # Download and install 7-Zip
+    $downloadUrl = "$(if ($osBits -eq 64) { "https://www.7-zip.org/a/7z2201-x64.exe" } else { "https://www.7-zip.org/a/7z2201.exe" })"
+    $downloadPath = "$($env:TEMP)\7z-install.exe"
 
-		$argumentList = "/S"
-		$installingMessage = "Installing 7-Zip..."
-		$errorMessage = "`nUAC prompt declined or an error occurred during installation."
+    Write-Time
+    Write-Feedback "Downloading 7-Zip..."
+    Get-WebFile $downloadUrl $downloadPath
 
-		$cancelled = Start-Installation $archiverDownloadPath $argumentList $installingMessage $errorMessage
+    $cancelled = Start-Installation $downloadPath "/S" "Installing 7-Zip..." "`nUAC prompt declined or an error occurred during installation."
+    Remove-Item $downloadPath -Force
 
-		# Installation complete; delete downloaded file
-		Remove-Item $archiverDownloadPath -Force
+    if ($cancelled) {
+        Write-Time
+        Write-ExitError "7-Zip installation cancelled. A supported archiver is required to use this script."
+    }
 
-		if ($cancelled) {
-			Write-Time
-			Write-ExitError "7-Zip installation cancelled. A supported archiver is required to use this script."
-		}
+    Write-Time
+    Write-Feedback "7-Zip installed." -ForegroundColor Green
 
-		Write-Time
-		Write-Feedback "7-Zip installed." -ForegroundColor Green
-
-		$archiverPath = Get-RegistryValueData "HKLM:\SOFTWARE\7-Zip" "Path" "7z.exe"
-	}
+    $path = Get-RegistryValueData "HKLM:\SOFTWARE\7-Zip" "Path" "7z.exe"
+    return $path, "x -bso0 -bsp1 -bse1 `"{0}`" -o`"{1}`" {2}"
 }
+
+# Finally, get archiver info
+$ArchiverPath, $extractionArgumentList = Get-ArchiverInfo
 
 ## Compare installed driver version to latest driver version
 if (-not $Force -and -not $dchAvailableAndUsingNonDchDriver -and $currentDriverVersion -eq $latestDriverVersion) {
@@ -705,7 +719,7 @@ if (Test-Path $configFilePath) {
 }
 
 try {
-	Start-Process -FilePath $archiverPath -NoNewWindow -ArgumentList ($extractionArgumentList -f $driverDownloadPath, $extractDir, $filesToExtract) -Wait
+	Start-Process -FilePath $ArchiverPath -NoNewWindow -ArgumentList ($extractionArgumentList -f $driverDownloadPath, $extractDir, $filesToExtract) -Wait
 }
 catch {
 	Write-ExitError "`nAn error occurred while extracting driver files."

@@ -29,6 +29,7 @@ Fork of [lord-carlos/nvidia-update](https://github.com/lord-carlos/nvidia-update
 - `-GpuDataFileUrl <string>` - Override the GPU data JSON file URL/path for determining product family (GPU) ID
 - `-OsDataFileUrl <string>` - Override the OS data JSON file URL/path for determining operating system ID
 - `-AjaxDriverServiceUrl <string>` - Override the AjaxDriverService URL; e.g., replace ".com" in the default value ("https://gfwsl.geforce.com/services_toolkit/services/com/nvidia/services/AjaxDriverService.php") with ".cn" to solve connectivity issues
+- `-ArchiverPath <string>` - Define a custom path for the archiver (7-Zip/WinRAR).
 
 ### How to pass optional parameters
 
